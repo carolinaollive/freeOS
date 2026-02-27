@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "android-sms-to-iphone"
+version = "0.1.0"
+description = "Transfer SMS/MMS/RCS messages from Android to iPhone via iOS backup manipulation"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    {name = "android-sms-to-iphone contributors"},
+]
+keywords = ["sms", "mms", "rcs", "android", "iphone", "ios", "backup", "transfer", "messages"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Telephony",
+    "Topic :: Utilities",
+]
+
+[project.scripts]
+android-sms-to-iphone = "android_sms_to_iphone.cli:main"
+
+[project.urls]
+Repository = "https://github.com/nicholasgasior/android-sms-to-iphone"
+
+[tool.setuptools.packages.find]
+include = ["android_sms_to_iphone*"]
