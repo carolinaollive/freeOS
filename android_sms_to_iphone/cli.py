@@ -1,11 +1,18 @@
-"""Command-line interface for android-sms-to-iphone."""
+"""Command-line interface for android-sms-to-iphone.
+
+The primary command is `transfer`: plug in your iPhone, point it at your
+Android export ZIP, and it handles everything (backup, inject, restore).
+"""
 
 import argparse
 import logging
+import os
 import sys
+import tempfile
 
 from . import __version__
 from . import converter
+from . import device
 from . import ios_backup
 
 
@@ -19,81 +26,87 @@ def setup_logging(verbose: bool = False):
     )
 
 
-def cmd_convert(args):
-    """Run the message conversion."""
-    backup_dir = ios_backup.find_backup(args.backup)
+def cmd_transfer(args):
+    """Full automated transfer: backup iPhone -> inject messages -> restore."""
+    export_path = args.input
 
-    print(f"Android export: {args.input}")
-    print(f"iOS backup:     {backup_dir}")
+    if not os.path.isfile(export_path):
+        print(f"Error: File not found: {export_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Preview what we're importing
+    from . import android_parser
+    print(f"Reading: {export_path}")
+    messages = android_parser.parse_export(export_path)
+    if not messages:
+        print("No messages found in export file.")
+        sys.exit(1)
+
+    sms = sum(1 for m in messages if m.msg_type == "sms")
+    mms = sum(1 for m in messages if m.msg_type == "mms")
+    rcs = sum(1 for m in messages if m.msg_type == "rcs")
+    contacts = len(set(m.address for m in messages))
+    print(f"Found {len(messages)} messages ({sms} SMS, {mms} MMS, {rcs} RCS) "
+          f"across {contacts} contacts")
     print()
 
     if args.dry_run:
-        print("DRY RUN MODE - no changes will be made")
-        print()
+        print("Dry run complete. Run without --dry-run to transfer.")
+        return
 
+    # Check for libimobiledevice tools
+    device.check_tools()
+
+    # Detect iPhone
+    udid = device.wait_for_device(timeout=30)
+    device_name = device.get_device_name(udid)
+    print(f"Found: {device_name}")
+    print()
+
+    # Make sure we're paired
+    device.ensure_paired(udid)
+
+    # Determine backup location
+    if args.backup_dir:
+        backup_parent = os.path.expanduser(args.backup_dir)
+    else:
+        backup_parent = tempfile.mkdtemp(prefix="android-sms-to-iphone-")
+
+    # Step 1: Create backup
+    print("=" * 50)
+    print("STEP 1/3: Backing up iPhone")
+    print("=" * 50)
+    backup_dir = device.create_backup(backup_parent, udid)
+    print()
+
+    # Step 2: Inject messages
+    print("=" * 50)
+    print("STEP 2/3: Injecting messages")
+    print("=" * 50)
     stats = converter.convert(
-        export_path=args.input,
+        export_path=export_path,
         backup_dir=backup_dir,
         skip_duplicates=not args.allow_duplicates,
-        dry_run=args.dry_run,
     )
-
-    print()
-    print("=" * 50)
-    print("CONVERSION RESULTS")
-    print("=" * 50)
     print(stats.summary())
     print()
 
-    if not args.dry_run and stats.inserted > 0:
-        print("SUCCESS! Next steps:")
-        print("  1. Open Finder on your Mac")
-        print("  2. Connect your iPhone via USB")
-        print("  3. Select your iPhone in Finder's sidebar")
-        print("  4. Click 'Restore Backup...'")
-        print(f"  5. Select the backup at: {backup_dir}")
-        print("  6. Wait for the restore to complete")
-        print("  7. Your Android messages should now appear in the Messages app!")
-        print()
-        print("NOTE: Restoring a backup will replace current iPhone data with the")
-        print("      backup data. Make sure your backup is recent before restoring.")
-    elif args.dry_run:
-        print("Dry run complete. Run without --dry-run to apply changes.")
-
-
-def cmd_list_backups(args):
-    """List available iOS backups."""
-    backups = ios_backup.list_backups()
-
-    if not backups:
-        print("No iOS backups found.")
-        print()
-        print("To create a backup:")
-        print("  1. Connect your iPhone to your Mac via USB")
-        print("  2. Open Finder and select your iPhone")
-        print("  3. Make sure 'Encrypt local backup' is UNCHECKED")
-        print("  4. Click 'Back Up Now'")
+    if stats.inserted == 0:
+        print("No new messages to add (all duplicates). Done!")
         return
 
-    print(f"Found {len(backups)} iOS backup(s):\n")
-    for i, b in enumerate(backups, 1):
-        name = b.get("device_name", "Unknown")
-        model = b.get("product_type", "")
-        ios_ver = b.get("ios_version", "")
-        encrypted = b.get("encrypted")
-        last = b.get("last_backup")
+    # Step 3: Restore backup
+    print("=" * 50)
+    print("STEP 3/3: Restoring to iPhone")
+    print("=" * 50)
+    device.restore_backup(backup_dir, udid)
+    print()
 
-        enc_str = ""
-        if encrypted is True:
-            enc_str = " [ENCRYPTED - cannot use]"
-        elif encrypted is False:
-            enc_str = " [unencrypted - OK]"
-
-        print(f"  {i}. {name} ({model}, iOS {ios_ver}){enc_str}")
-        if last:
-            print(f"     Last backup: {last}")
-        print(f"     Path: {b['path']}")
-        print()
+    print("=" * 50)
+    print("DONE!")
+    print("=" * 50)
+    print(f"Transferred {stats.inserted} messages to your iPhone.")
+    print("Open the Messages app to see your Android messages.")
 
 
 def cmd_info(args):
@@ -109,7 +122,6 @@ def cmd_info(args):
         print("No messages found in export.")
         return
 
-    # Gather stats
     sms = sum(1 for m in messages if m.msg_type == "sms")
     mms = sum(1 for m in messages if m.msg_type == "mms")
     rcs = sum(1 for m in messages if m.msg_type == "rcs")
@@ -117,11 +129,8 @@ def cmd_info(args):
     received = sum(1 for m in messages if not m.is_sent)
     with_attachments = sum(1 for m in messages if m.attachments)
     total_attachments = sum(len(m.attachments) for m in messages)
-
-    # Unique contacts
     contacts = set(m.address for m in messages)
 
-    # Date range
     dates = [m.timestamp_ms for m in messages if m.timestamp_ms > 0]
     if dates:
         from datetime import datetime, timezone
@@ -139,7 +148,8 @@ def cmd_info(args):
     print(f"Contacts:      {len(contacts)} unique")
     print(f"Attachments:   {total_attachments} across {with_attachments} messages")
     if earliest and latest:
-        print(f"Date range:    {earliest.strftime('%Y-%m-%d')} to {latest.strftime('%Y-%m-%d')}")
+        print(f"Date range:    {earliest.strftime('%Y-%m-%d')} to "
+              f"{latest.strftime('%Y-%m-%d')}")
 
     if args.verbose:
         print(f"\nTop contacts by message count:")
@@ -152,54 +162,57 @@ def cmd_info(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="android-sms-to-iphone",
-        description="Transfer SMS/MMS/RCS messages from Android to iPhone",
-        epilog="For detailed instructions, see: https://github.com/nicholasgasior/android-sms-to-iphone",
+        description=(
+            "Transfer SMS/MMS/RCS messages from Android to iPhone.\n\n"
+            "Quick start:\n"
+            "  1. Export messages on Android using the 'SMS Import / Export' app\n"
+            "  2. Connect your iPhone via USB\n"
+            "  3. Run: android-sms-to-iphone transfer export.zip"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("--version", action="version",
+                        version=f"%(prog)s {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Enable verbose/debug output")
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # convert command
-    p_convert = subparsers.add_parser(
-        "convert",
-        help="Convert Android messages and inject into iOS backup",
-        description="Parse an Android SMS export and inject messages into an iOS backup.",
+    # transfer command (primary)
+    p_transfer = subparsers.add_parser(
+        "transfer",
+        help="Transfer Android messages to a connected iPhone (one step)",
+        description=(
+            "Backs up your iPhone, injects the Android messages, "
+            "and restores -- all automatically."
+        ),
     )
-    p_convert.add_argument(
+    p_transfer.add_argument(
         "input",
-        help="Path to Android SMS export file (ZIP or XML from 'SMS Import / Export' app)",
+        help="Path to Android SMS export (ZIP from 'SMS Import / Export' app)",
     )
-    p_convert.add_argument(
-        "-b", "--backup",
-        help="Path to iOS backup directory (auto-detected on macOS if not specified)",
+    p_transfer.add_argument(
+        "--backup-dir",
+        help="Directory to store the iPhone backup (temp dir if not specified)",
     )
-    p_convert.add_argument(
+    p_transfer.add_argument(
         "--dry-run", action="store_true",
-        help="Parse and report without modifying the backup",
+        help="Just show what would be transferred, don't touch the iPhone",
     )
-    p_convert.add_argument(
+    p_transfer.add_argument(
         "--allow-duplicates", action="store_true",
-        help="Don't skip messages that appear to already exist in the backup",
+        help="Don't skip messages that already exist on the iPhone",
     )
-    p_convert.set_defaults(func=cmd_convert)
-
-    # list-backups command
-    p_list = subparsers.add_parser(
-        "list-backups",
-        help="List available iOS backups on this Mac",
-    )
-    p_list.set_defaults(func=cmd_list_backups)
+    p_transfer.set_defaults(func=cmd_transfer)
 
     # info command
     p_info = subparsers.add_parser(
         "info",
-        help="Show information about an Android SMS export file",
+        help="Show details about an Android SMS export file",
     )
     p_info.add_argument(
         "input",
-        help="Path to Android SMS export file (ZIP or XML)",
+        help="Path to Android SMS export (ZIP or NDJSON)",
     )
     p_info.set_defaults(func=cmd_info)
 
@@ -212,6 +225,9 @@ def main():
 
     try:
         args.func(args)
+    except device.DeviceError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
