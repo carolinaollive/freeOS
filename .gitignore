@@ -12,3 +12,22 @@ venv/
 *.bak
 *.db-wal
 *.db-shm
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+
+# iOS
+ios/*.xcodeproj/xcuserdata/
+ios/*.xcworkspace/xcuserdata/
+ios/DerivedData/
+ios/Pods/
+*.ipa
+
+# Environment
+.env
+.env.local

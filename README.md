@@ -1,135 +1,155 @@
-# android-sms-to-iphone
+# FreeOS — Transfer Everything from Android to iPhone
 
-Transfer SMS, MMS, and RCS messages from Android to iPhone — no jailbreak required.
+Two apps. One platform. Sign in with Google and transfer all your messages.
 
-The official "Move to iOS" app is notoriously unreliable, and third-party tools are expensive and sketchy. This is a free, open-source alternative.
+No cables, no export apps, no command line. Just install, sign in, and go.
 
-## Usage
+## How it works
 
-**On your Android phone:**
+### On your Android phone:
 
-1. Install the free [SMS Import / Export](https://github.com/tmo1/sms-ie) app ([Google Play](https://play.google.com/store/apps/details?id=com.github.tmo1.sms_ie) / [F-Droid](https://f-droid.org/packages/com.github.tmo1.sms_ie/))
-2. Export your messages as a **ZIP** file
-3. Transfer the ZIP to your computer (email it to yourself, USB, cloud drive, etc.)
+1. Install the **FreeOS Transfer** app from Google Play
+2. Sign in with Google
+3. Tap **Start Transfer** — the app reads your SMS/MMS directly and uploads them
 
-**On your computer (macOS or Linux):**
+### On your iPhone:
 
-4. Connect your iPhone via USB, unlock it, and tap "Trust" if prompted
-5. Run:
+1. Install the **FreeOS Transfer** app from the App Store
+2. Sign in with the **same Google account**
+3. Tap the ready transfer — your messages download automatically
+4. Connect your iPhone to a computer to complete the restore
 
-```bash
-android-sms-to-iphone transfer export.zip
-```
+That's it. Your Android messages appear in the iPhone Messages app.
 
-That's it. The tool automatically backs up your iPhone, injects the messages, and restores. Your Android messages will appear in the Messages app.
-
-## What it supports
+## What it transfers
 
 | Type | Supported | Notes |
 |------|-----------|-------|
 | SMS  | Yes       | Text messages |
-| MMS  | Yes       | Group messages and media (images, video, audio) |
+| MMS  | Yes       | Group messages, images, video, audio |
 | RCS  | Yes       | Imported as SMS (iPhone has no RCS history format) |
 
-## Install
+## Architecture
 
-**1. Install libimobiledevice** (handles iPhone communication):
-
-```bash
-# macOS
-brew install libimobiledevice
-
-# Ubuntu / Debian
-sudo apt install libimobiledevice-utils
-
-# Fedora
-sudo dnf install libimobiledevice-utils
+```
+┌─────────────┐         ┌─────────────┐         ┌─────────────┐
+│  Android App │ ──────▶ │  Backend API │ ◀────── │   iOS App   │
+│  (Kotlin)    │  upload  │  (FastAPI)   │ download │  (Swift)    │
+└─────────────┘         └─────────────┘         └─────────────┘
+       │                       │                       │
+  Google SSO              PostgreSQL              Google SSO
+  SMS Reader              S3 Storage           Message Import
+  Auto-upload             Auto-cleanup          Backup Restore
 ```
 
-**2. Install this tool:**
+### Android App (`android/`)
+- **Kotlin + Jetpack Compose** — Material 3, Hilt DI
+- Reads SMS/MMS directly from the device via `ContentResolver` (no third-party export app needed)
+- Google Sign-In for account creation
+- Batched upload with progress tracking
 
-```bash
-pip install .
-```
+### iOS App (`ios/`)
+- **Swift + SwiftUI** — native iOS design
+- Google Sign-In — same account as Android
+- Downloads messages from the backend
+- Saves as NDJSON for the desktop restore tool
+- Guides the user through the final backup-restore step
 
-Or run directly without installing:
+### Backend API (`backend/`)
+- **Python + FastAPI** — async, high performance
+- Google OAuth2 token verification
+- PostgreSQL for user accounts and message metadata
+- S3-compatible storage for attachments
+- JWT authentication
+- Auto-cleanup: transfers expire after 72 hours
+- Messages encrypted in transit (TLS) and at rest
 
-```bash
-python -m android_sms_to_iphone.cli transfer export.zip
-```
-
-## Commands
-
-### `transfer` (main command)
-
+### CLI Tool (`android_sms_to_iphone/`)
+The original command-line tool is still included for power users who prefer to transfer via USB without a cloud service:
 ```bash
 android-sms-to-iphone transfer export.zip
 ```
 
-Backs up your iPhone, injects messages, and restores — all in one step.
+## Security
 
-| Option | Description |
-|--------|-------------|
-| `--dry-run` | Preview what would be transferred without touching the iPhone |
-| `--backup-dir DIR` | Store the backup in a specific directory |
-| `--allow-duplicates` | Don't skip messages that already exist |
-| `-v, --verbose` | Show detailed debug output |
+- **Google SSO only** — no passwords to manage
+- **Messages encrypted in transit** via TLS
+- **Auto-deletion** — all transfer data is automatically deleted after 72 hours
+- **No data mining** — messages are never read or analyzed by the platform
+- **Open source** — audit the code yourself
 
-### `info`
+## Development
+
+### Backend
 
 ```bash
-android-sms-to-iphone info export.zip
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload
 ```
 
-Show what's in an Android export file (message counts, contacts, date range) without connecting an iPhone.
+Environment variables (prefix with `FREEOS_`):
+- `FREEOS_DATABASE_URL` — PostgreSQL connection string
+- `FREEOS_GOOGLE_CLIENT_ID` — Google OAuth client ID
+- `FREEOS_GOOGLE_CLIENT_SECRET` — Google OAuth client secret
+- `FREEOS_JWT_SECRET` — Secret key for JWT tokens
+- `FREEOS_STORAGE_BUCKET` — S3 bucket name
+- `FREEOS_STORAGE_ENDPOINT` — S3-compatible endpoint (optional)
+- `FREEOS_STORAGE_ACCESS_KEY` — S3 access key
+- `FREEOS_STORAGE_SECRET_KEY` — S3 secret key
 
-## Important notes
+### Android
 
-- **No jailbreak required.** The tool works by modifying an iPhone backup and restoring it — a supported Apple workflow.
-- **Backup encryption must be off.** If your iPhone uses encrypted backups, temporarily disable it in Finder (or Settings > General > Transfer or Reset) before running the tool. You can re-enable it afterward.
-- **Messages in iCloud:** If you use Messages in iCloud, temporarily disable it (Settings > [your name] > iCloud > Messages) before creating the backup, otherwise the SMS database may be empty. Re-enable it after the restore.
-- **Your data is safe.** The tool only *adds* messages — it never deletes anything. It also creates `.bak` safety copies of every file it modifies.
-- **Duplicate detection** prevents the same message from being imported twice if you run the tool again.
+Open `android/` in Android Studio. Set your Google Client ID in `app/build.gradle.kts`.
 
-## How it works
+### iOS
 
-1. Creates an iPhone backup via `libimobiledevice` (same protocol as Finder/iTunes)
-2. Parses the Android message export (NDJSON from SMS Import / Export, or XML from SMS Backup & Restore)
-3. Injects messages into the backup's SQLite SMS database (`sms.db`), creating proper handle, chat, message, and attachment entries
-4. Restores the modified backup to the iPhone
+Open `ios/SMSTransfer/` in Xcode. Set your Google Client ID in `Services/AppConfig.swift`.
 
-No cloud services, no proprietary software, no jailbreak.
+### CLI (legacy)
 
-## Troubleshooting
+```bash
+pip install .
+android-sms-to-iphone transfer export.zip
+```
 
-### "No iPhone detected"
+## Project structure
 
-- Make sure your iPhone is connected via USB and **unlocked**
-- Tap "Trust" on the iPhone if it asks
-- Try unplugging and re-plugging the cable
-
-### "Backup encryption" error
-
-Disable encrypted backups:
-- **macOS:** Finder > select iPhone > uncheck "Encrypt local backup"
-- **iPhone:** Settings > General > Transfer or Reset iPhone > Reset All Settings (this resets the encryption flag without erasing data)
-
-### Messages don't appear after restore
-
-- Disable Messages in iCloud (Settings > [your name] > iCloud > Messages) before creating the backup
-- Make sure the restore completed without errors
-- Try opening a specific conversation — messages may not show in the list until you open the thread
+```
+├── backend/                    # FastAPI backend
+│   ├── app/
+│   │   ├── main.py             # App entry point
+│   │   ├── config.py           # Environment config
+│   │   ├── auth.py             # Google SSO + JWT
+│   │   ├── models.py           # SQLAlchemy models
+│   │   ├── schemas.py          # Pydantic schemas
+│   │   ├── database.py         # DB connection
+│   │   ├── routes/
+│   │   │   ├── auth.py         # POST /auth/google, GET /auth/me
+│   │   │   ├── transfers.py    # CRUD for transfer sessions
+│   │   │   └── messages.py     # Upload/download messages
+│   │   └── services/
+│   │       ├── storage.py      # S3 attachment storage
+│   │       └── transfer.py     # Transfer business logic
+│   ├── Dockerfile
+│   └── requirements.txt
+├── android/                    # Android app (Kotlin)
+│   └── app/src/main/java/com/freeos/smstransfer/
+│       ├── MainActivity.kt
+│       ├── sms/SmsReader.kt    # Reads SMS/MMS from device
+│       ├── data/api/           # Retrofit API client
+│       ├── data/repository/    # Transfer orchestration
+│       └── ui/screens/         # Compose UI
+├── ios/                        # iOS app (Swift)
+│   └── SMSTransfer/
+│       ├── SMSTransferApp.swift
+│       ├── Auth/               # Google Sign-In
+│       ├── Services/           # API client, message importer
+│       └── Views/              # SwiftUI screens
+├── android_sms_to_iphone/      # Original CLI tool
+└── tests/                      # CLI tool tests
+```
 
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions welcome! Areas that could use help:
-
-- Testing with diverse export files and edge cases
-- Support for encrypted iOS backups (decryption + re-encryption)
-- Better group chat handling
-- Contact name resolution
-- Windows support

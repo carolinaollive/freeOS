@@ -1,0 +1,49 @@
+services:
+  api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      FREEOS_DATABASE_URL: postgresql+asyncpg://freeos:freeos@db:5432/freeos
+      FREEOS_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      FREEOS_GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      FREEOS_JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      FREEOS_STORAGE_BUCKET: freeos-transfers
+      FREEOS_STORAGE_ENDPOINT: http://minio:9000
+      FREEOS_STORAGE_ACCESS_KEY: minioadmin
+      FREEOS_STORAGE_SECRET_KEY: minioadmin
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: freeos
+      POSTGRES_PASSWORD: freeos
+      POSTGRES_DB: freeos
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U freeos"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - miniodata:/data
+
+volumes:
+  pgdata:
+  miniodata:
